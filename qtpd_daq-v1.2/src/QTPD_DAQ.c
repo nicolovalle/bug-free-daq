@@ -95,6 +95,7 @@ int32_t handle = -1;
 int VMEerror = 0;
 char ErrorString[100];
 FILE *logfile;
+FILE *datafile;
 
 int Iped = 100;
 
@@ -118,9 +119,15 @@ uint16_t read_reg(uint16_t reg_addr)
 	return(data);
 }
 
-void infoword(char* c, uint w){
+int infoword(char* c, uint w){
   int datatype = (w >> 24) & 0b111;
   sprintf(c, "dtype %d",datatype);
+  if (datatype == 0 && (w >>16 & 0b11111) == 0){
+    return w & 0xFFF;
+  }
+  else{
+    return -1;
+  }
 }
 
 
@@ -170,6 +177,7 @@ int main(int argc, char *argv[])
     printf("Log file is %s\n",tmp);
     logfile = fopen(tmp,"w");
   }
+
 
   CVBoardTypes ctype = cvV2718;
   if (CAENVME_Init2(ctype, &pid, 0, &handle) != cvSuccess){
@@ -222,27 +230,42 @@ int main(int argc, char *argv[])
   int ppnt = -1, pwcnt=-1;
   printf("reading...\n");
 
-  int evt = -1;
+  int evt = 0;
+  bool doopen = true;
   while(!quit){
 
+    
+     
     CAENVME_FIFOMBLTReadCycle(handle, BaseAddress, (char *)buffer, MAX_BLT_SIZE, cvA32_U_MBLT, &bcnt);
     if (bcnt == 0){
       continue;
     }
 
-    evt+=1;
+   
 
     wcnt = bcnt/4;
 
-    char info[40];
-    for (pnt=0; pnt < wcnt; pnt+=1){
-      infoword(info, buffer[pnt]);
-      printf("evt %d pnt %d wcnt %d bcnt/4 %.2f - %s\n\r", evt, pnt, wcnt, bcnt/4., info);
+    if (doopen){
+      datafile = fopen("data.txt","a");
+      doopen = false;
     }
 
+    char info[40];
+    for (pnt=0; pnt < wcnt; pnt+=1){
+      int adc = infoword(info, buffer[pnt]);
+      printf("evt %d pnt %d wcnt %d bcnt/4 %.2f - %s\n\r", evt, pnt, wcnt, bcnt/4., info);
+      if (adc > 0){
+	fprintf(datafile,"%d\n",adc);
+      }
+    }
 
-    if (evt >= 10) quit = true;
     
+
+   
+    evt++;
+
+    fclose(datafile);
+    doopen = true;
     
       
   }
@@ -300,6 +323,7 @@ int main(int argc, char *argv[])
     }
   }
   if (logfile != NULL) fclose(logfile);
+  
 
   printf("Done\n");
   

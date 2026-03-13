@@ -1,0 +1,53 @@
+import sys
+import time
+
+
+Usage=f"""
+  %s data_file.txt channel
+"""%str(sys.argv[0])
+
+if len(sys.argv) < 3:
+    print(Usage)
+    exit()
+
+datafile = str(sys.argv[1])
+chan = int(sys.argv[2])
+
+if datafile == '-h' or datafile == '--help':
+    print(Usage)
+    exit()
+
+
+if __name__ == "__main__":
+
+    print(f"Importing ROOT")
+    import ROOT
+
+    hist = ROOT.TH1F("h","Streaming histo",5000,0,5000)
+
+    c = ROOT.TCanvas("c", "", 800, 600)
+
+    with open(datafile, "r") as f:
+
+    # vai alla fine del file
+        f.seek(0, 2)
+
+        while True:
+
+            line = f.readline()
+
+            if not line:
+                time.sleep(0.1)
+                continue
+
+            try:
+                values = line.strip().split()
+                value = float(values[chan])
+                hist.Fill(value)
+
+                c.cd()
+                hist.Draw()
+                c.Update()
+            
+            except ValueError:
+                pass
