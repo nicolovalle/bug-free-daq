@@ -35,6 +35,8 @@ Supported Discriminator Models: V812, V814, V895
 #include <inttypes.h>
 #include <math.h>
 #include <time.h>
+#include <signal.h>
+#include <stdbool.h>
 
 #ifdef _WIN32
 	#include <sys/timeb.h>
@@ -96,6 +98,8 @@ FILE *logfile;
 
 int Iped = 100;
 
+bool quit = false;
+
 
 /*******************************************************************************/
 /*                               READ_REG                                      */
@@ -112,6 +116,11 @@ uint16_t read_reg(uint16_t reg_addr)
 	if (ENABLE_LOG)
 		fprintf(logfile, " Reading register at address %08X; data=%04X; ret=%d\n", (uint32_t)(BaseAddress + reg_addr), data, (int)ret);
 	return(data);
+}
+
+void infoword(char* c, uint w){
+  int datatype = (w >> 24) & 0b111;
+  sprintf(c, "dtype %d",datatype);
 }
 
 
@@ -132,6 +141,10 @@ void write_reg(uint16_t reg_addr, uint16_t data)
 }
 
 
+void sighandler(int sig){
+  signal(sig, SIG_IGN);
+  quit = true;
+}
 
 
 
@@ -141,8 +154,9 @@ void write_reg(uint16_t reg_addr, uint16_t data)
 int main(int argc, char *argv[])
 {
 
+  
   uint32_t pid = 0;
-  int pnt;
+  uint32_t buffer[256*1024/4];
   
   printf("\n");
   printf("****************************************************************************\n");
@@ -188,8 +202,107 @@ int main(int argc, char *argv[])
   getch();
  
 
+  // ------------------------------------------------------------------------------------
+  // Acquisition loop
+  // ------------------------------------------------------------------------------------
+  int pnt = 0;  // word pointer
+  int wcnt = 0; // num of lword read in the MBLT cycle
+  int bcnt;
+  int totnb =0 ;
+  buffer[0] = DATATYPE_FILLER;
+  
+  // clear Event Counter
+  write_reg(0x1040, 0x0);
+  // clear QTP
+  write_reg(0x1032, 0x4);
+  write_reg(0x1034, 0x4);
+
+  // if needed, read a new block of data from the board
+  signal(SIGINT, sighandler);
+  int ppnt = -1, pwcnt=-1;
+  printf("reading...\n");
+
+  int evt = -1;
+  while(!quit){
+
+    CAENVME_FIFOMBLTReadCycle(handle, BaseAddress, (char *)buffer, MAX_BLT_SIZE, cvA32_U_MBLT, &bcnt);
+    if (bcnt == 0){
+      continue;
+    }
+
+    evt+=1;
+
+    wcnt = bcnt/4;
+
+    char info[40];
+    for (pnt=0; pnt < wcnt; pnt+=1){
+      infoword(info, buffer[pnt]);
+      printf("evt %d pnt %d wcnt %d bcnt/4 %.2f - %s\n\r", evt, pnt, wcnt, bcnt/4., info);
+    }
+
+
+    if (evt >= 10) quit = true;
+    
+    
+      
+  }
+
+    
+  
+ //while(!quit){
+ //  char info[40];
+ //  
+ //  
+ //  if ((pnt == wcnt) || ((buffer[pnt] & DATATYPE_MASK) == DATATYPE_FILLER)) { // FILLER is actually datatype empty (page 46 manual)
+ //    
+ //  
+ //    CAENVME_FIFOMBLTReadCycle(handle, BaseAddress, (char *)buffer, MAX_BLT_SIZE, cvA32_U_MBLT, &bcnt);
+ //    if (ENABLE_LOG && (bcnt>0)) {
+ //	int b;
+ //	fprintf(logfile, "Read Data Block: size = %d bytes\n", bcnt);
+ //	for(b=0; b<(bcnt/4); b++)
+ //	  fprintf(logfile, "%2d: %08X\n", b, buffer[b]);
+ //    }
+ //    //printf("bcnt %d",bcnt);
+ //    wcnt = bcnt/4;
+ //    totnb += bcnt;
+ //    pnt = 0;
+ //  }
+ //  
+ //
+ //  infoword(info, buffer[pnt]);
+ //  if (pnt != ppnt || pwcnt != wcnt){
+ //    printf("Loop pnt %d wcnt %d bcnt/4 %.2f - %s\n\r", pnt, wcnt, bcnt/4., info);
+ //    ppnt = pnt;
+ //    pwcnt = wcnt;
+ //  }
+ //  
+ //  
+ //  if (wcnt == 0){  // no data available     
+ //    continue;
+ //  }
+ //
+ //  
+ //  
+ //  pnt++;
+ //  
+ //
+ //  
+ //}
+  
  QuitProgram:
-  if (handle >= 0) CAENVME_End(handle);
+  printf("Exiting gracefully\n");
+  
+  if (handle >= 0) {
+    int attempt = 0;
+    while (CAENVME_End(handle) != cvSuccess){
+      printf("Closing attempt %d\n",attempt+=1);
+    }
+  }
   if (logfile != NULL) fclose(logfile);
+
+  printf("Done\n");
   
 }
+
+
