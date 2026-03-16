@@ -87,7 +87,7 @@ char path[128];
 // Global Variables
 // --------------------------
 // Base Addresses
-uint32_t BaseAddress = 0x06000000;
+
 //
 //// handle for the V1718/V2718 
 int32_t handle = -1; 
@@ -102,27 +102,30 @@ int Iped = 100;
 bool quit = false;
 
 
+
+
 /*******************************************************************************/
 /*                               READ_REG                                      */
 /*******************************************************************************/
-uint16_t read_reg(uint16_t reg_addr)
+uint16_t read_reg(uint16_t reg_addr, uint32_t BaseAddr)
 {
 	uint16_t data=0;
 	CVErrorCodes ret;
-	ret = CAENVME_ReadCycle(handle, BaseAddress + reg_addr, &data, cvA32_U_DATA, cvD16);
+	ret = CAENVME_ReadCycle(handle, BaseAddr + reg_addr, &data, cvA32_U_DATA, cvD16);
 	if(ret != cvSuccess) {
-		sprintf(ErrorString, "Cannot read at address %08X\n", (uint32_t)(BaseAddress + reg_addr));
+		sprintf(ErrorString, "Cannot read at address %08X\n", (uint32_t)(BaseAddr + reg_addr));
 		VMEerror = 1;
 	}
 	if (ENABLE_LOG)
-		fprintf(logfile, " Reading register at address %08X; data=%04X; ret=%d\n", (uint32_t)(BaseAddress + reg_addr), data, (int)ret);
+		fprintf(logfile, " Reading register at address %08X; data=%04X; ret=%d\n", (uint32_t)(BaseAddr + reg_addr), data, (int)ret);
 	return(data);
 }
 
 int infoword(char* c, uint w){
   int datatype = (w >> 24) & 0b111;
-  sprintf(c, "dtype %d",datatype);
-  if (datatype == 0 && (w >>16 & 0b11111) == 0){
+  int chann = (w >> 16) & 0b11111;
+  sprintf(c, "dtype %d chan%d",datatype, chann);
+  if (datatype == 0 && (chann >= 0 && chann < 4)){
     return w & 0xFFF;
   }
   else{
@@ -135,16 +138,16 @@ int infoword(char* c, uint w){
 /*******************************************************************************/
 /*                                WRITE_REG                                    */
 /*******************************************************************************/
-void write_reg(uint16_t reg_addr, uint16_t data)
+void write_reg(uint16_t reg_addr, uint16_t data, uint32_t BaseAddr)
 {
 	CVErrorCodes ret;
-	ret = CAENVME_WriteCycle(handle, BaseAddress + reg_addr, &data, cvA32_U_DATA, cvD16);
+	ret = CAENVME_WriteCycle(handle, BaseAddr + reg_addr, &data, cvA32_U_DATA, cvD16);
 	if(ret != cvSuccess) {
-		sprintf(ErrorString, "Cannot write at address %08X\n", (uint32_t)(BaseAddress + reg_addr));
+		sprintf(ErrorString, "Cannot write at address %08X\n", (uint32_t)(BaseAddr + reg_addr));
 		VMEerror = 1;
 	}
 	if (ENABLE_LOG)
-		fprintf(logfile, " Writing register at address %08X; data=%04X; ret=%d\n", (uint32_t)(BaseAddress + reg_addr), data, (int)ret);
+		fprintf(logfile, " Writing register at address %08X; data=%04X; ret=%d\n", (uint32_t)(BaseAddr + reg_addr), data, (int)ret);
 }
 
 
@@ -153,6 +156,36 @@ void sighandler(int sig){
   quit = true;
 }
 
+
+//************ INIT BOARD ********************************************************
+int Init_Board(uint32_t BaseAddr){
+  printf("Initializing board at addr %08x ...\n", BaseAddr);
+
+  write_reg(0x1016, 0, BaseAddr); // reset board
+  if (VMEerror) {
+    printf(ErrorString);
+    getch();
+    return 1;
+  }
+
+  int model = (read_reg(0x803E, BaseAddr) & 0xFF) + ((read_reg(0x803A, BaseAddr) & 0xFF) << 8);
+  printf("... model: %d\n",model);
+
+  write_reg(0x1060, Iped  , BaseAddr);  // Set pedestal
+  write_reg(0x1010, 0x60  , BaseAddr);  // enable BERR to close BLT at end of block
+			  
+  write_reg(0x1032, 0x0010, BaseAddr);  // disable zero suppression
+  write_reg(0x1032, 0x0008, BaseAddr);  // disable overrange suppression
+  write_reg(0x1032, 0x1000, BaseAddr);  // enable empty events
+
+  // clear Event Counter
+  write_reg(0x1040, 0x0, BaseAddr);
+  // clear QTP	       
+  write_reg(0x1032, 0x4, BaseAddr);
+  write_reg(0x1034, 0x4, BaseAddr);
+  printf("Board programmed\n");
+  return 0;
+}
 
 
 /******************************************************************************/
@@ -187,28 +220,58 @@ int main(int argc, char *argv[])
 
   // let's start doing things
   
-  write_reg(0x1016, 0); // reset board
-  if (VMEerror) {
-    printf(ErrorString);
+  //write_reg(0x1016, 0); // reset board
+  //if (VMEerror) {
+  //  printf(ErrorString);
+  //  getch();
+  //  goto QuitProgram;
+  //}
+  //
+  //int model = (read_reg(0x803E) & 0xFF) + ((read_reg(0x803A) & 0xFF) << 8);
+  //printf("Model: %d\n",model);
+  //
+  //write_reg(0x1060, Iped);  // Set pedestal
+  //write_reg(0x1010, 0x60);  // enable BERR to close BLT at end of block
+  //
+  //write_reg(0x1032, 0x0010);  // disable zero suppression
+  //write_reg(0x1032, 0x0008);  // disable overrange suppression
+  //write_reg(0x1032, 0x1000);  // enable empty events
+  //
+  ////printf("Ctrl Reg = %04X\n", read_reg(0x1032));  
+  //printf("Board programmed\n");
+
+  
+  int init1 = Init_Board(0x06000000);
+  int init2 = Init_Board(0x05000000);
+  int init3 = Init_Board(0x09000000);
+
+  if (init1 | init2 | init3){
+    printf("Initialization failed. Press any key\n");
     getch();
     goto QuitProgram;
   }
+  
+  /*
+  printf("Setting for block transfer\n");
+  write_reg(0x1004, 0xAA, 0x06000000);
+  write_reg(0x1004, 0xAA, 0x05000000);
+  write_reg(0x1004, 0xAA, 0x06000000);
 
-  int model = (read_reg(0x803E) & 0xFF) + ((read_reg(0x803A) & 0xFF) << 8);
-  printf("Model: %d\n",model);
-
-  write_reg(0x1060, Iped);  // Set pedestal
-  write_reg(0x1010, 0x60);  // enable BERR to close BLT at end of block
-
-  write_reg(0x1032, 0x0010);  // disable zero suppression
-  write_reg(0x1032, 0x0008);  // disable overrange suppression
-  write_reg(0x1032, 0x1000);  // enable empty events
-
-  //printf("Ctrl Reg = %04X\n", read_reg(0x1032));  
-  printf("Board programmed\n");
+  write_reg(0x1004, 0x02, 0x06000000);
+  write_reg(0x1004, 0x03, 0x05000000);
+  write_reg(0x1004, 0x01, 0x09000000);
+  */
+  
+  //write_reg(0x1006, 0x80, 0xAA000000);
+  
+  printf("Done\n");
+  
+  
   printf("Press any key to start\n");
   getch();
- 
+
+  datafile = fopen("data.txt","a");
+  
 
   // ------------------------------------------------------------------------------------
   // Acquisition loop
@@ -219,11 +282,7 @@ int main(int argc, char *argv[])
   int totnb =0 ;
   buffer[0] = DATATYPE_FILLER;
   
-  // clear Event Counter
-  write_reg(0x1040, 0x0);
-  // clear QTP
-  write_reg(0x1032, 0x4);
-  write_reg(0x1034, 0x4);
+  
 
   // if needed, read a new block of data from the board
   signal(SIGINT, sighandler);
@@ -235,39 +294,52 @@ int main(int argc, char *argv[])
   while(!quit){
 
     
-     
-    CAENVME_FIFOMBLTReadCycle(handle, BaseAddress, (char *)buffer, MAX_BLT_SIZE, cvA32_U_MBLT, &bcnt);
+    uint32_t ReadAddress = 0x06000000; 
+    CAENVME_FIFOMBLTReadCycle(handle, ReadAddress, (char *)buffer, MAX_BLT_SIZE, cvA32_U_MBLT, &bcnt);
     if (bcnt == 0){
       continue;
-    }
-
-   
+    } 
 
     wcnt = bcnt/4;
 
-    if (doopen){
-      datafile = fopen("data.txt","a");
-      doopen = false;
-    }
 
     char info[40];
+    int adc0 = 4444, adc1 = 4444, adc2 = 4444, adc3 = 4444;
     for (pnt=0; pnt < wcnt; pnt+=1){
       int adc = infoword(info, buffer[pnt]);
+
       printf("evt %d pnt %d wcnt %d bcnt/4 %.2f - %s\n\r", evt, pnt, wcnt, bcnt/4., info);
-      if (adc > 0){
-	fprintf(datafile,"%d\n",adc);
+      
+      if (adc > -1){
+	char querychan0[] = "chan0";
+	char querychan1[] = "chan1";
+	char querychan2[] = "chan2";
+	char querychan3[] = "chan3";
+	if (strstr(info, querychan0) != NULL){
+	  adc0 = adc;
+	}
+	else if (strstr(info, querychan1) != NULL){
+	  adc1 = adc;
+	}
+	else if (strstr(info, querychan2) != NULL){
+	  adc2 = adc;
+	}
+	else if (strstr(info, querychan3) != NULL){
+	  adc3 = adc;
+	}
+	
       }
     }
 
-    
-
+    fprintf(datafile,"%d %d %d %d\n",adc0,adc1,adc2,adc3);
+    fflush(datafile);
+    adc0 = 4444;
+    adc1 = 4444;
+    adc2 = 4444;
+    adc3 = 4444;
+	
    
-    evt++;
-
-    fclose(datafile);
-    doopen = true;
-    
-      
+    evt++;     
   }
 
     
@@ -315,6 +387,8 @@ int main(int argc, char *argv[])
   
  QuitProgram:
   printf("Exiting gracefully\n");
+
+  fclose(datafile);
   
   if (handle >= 0) {
     int attempt = 0;
