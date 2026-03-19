@@ -60,7 +60,7 @@ char path[128];
 
 /****************************************************/
 
-#define MAX_BLT_SIZE		(256*1024)
+#define MAX_BLT_SIZE		(1024*4)
 
 #define DATATYPE_MASK		0x06000000
 #define DATATYPE_HEADER		0x02000000
@@ -156,19 +156,20 @@ void sighandler(int sig){
 
 
 //************ INIT BOARD ********************************************************
-int Init_Board(uint32_t BaseAddr){
+int Init_Board(uint32_t BaseAddr, uint16_t geoAddr, uint16_t crateNr){
   printf("Initializing board at addr %08x ...\n", BaseAddr);
-
-  write_reg(0x1016, 0, BaseAddr); // reset board
+  write_reg(0x1002, geoAddr, BaseAddr);  // write geo addr
+  // write_reg(0x1016, 0, BaseAddr); // reset board
+  write_reg(0x1006, 0x80, BaseAddr); // reset board
   if (VMEerror) {
     printf(ErrorString);
     getch();
     return 1;
   }
-
+  write_reg(0x1008, 0x80, BaseAddr); // release reset
   int model = (read_reg(0x803E, BaseAddr) & 0xFF) + ((read_reg(0x803A, BaseAddr) & 0xFF) << 8);
   printf("... model: %d\n",model);
-
+  write_reg(0x103C, crateNr, BaseAddr); // set crate number
   write_reg(0x1060, Iped  , BaseAddr);  // Set pedestal
   write_reg(0x1010, 0x60  , BaseAddr);  // enable BERR to close BLT at end of block
 			  
@@ -180,8 +181,9 @@ int Init_Board(uint32_t BaseAddr){
   write_reg(0x1040, 0x0, BaseAddr);
   // clear QTP	       
   write_reg(0x1032, 0x4, BaseAddr);
-  write_reg(0x1034, 0x4, BaseAddr);
-  printf("Board programmed\n");
+  write_reg(0x1034, 0x4004, BaseAddr);
+  uint16_t regr = read_reg(0x1032, BaseAddr);
+  printf("Board programmed 0x%x\n", regr);
   return 0;
 }
 
@@ -220,34 +222,37 @@ int main(int argc, char *argv[])
 
 
   CVBoardTypes ctype = cvV2718;
+  // CVBoardTypes ctype = cvUSB_A4818_V2718;
+  pid = 49086;
   if (CAENVME_Init2(ctype, &pid, 0, &handle) != cvSuccess){
     printf("Failed to open VME controller...\n");
     Sleep(1000);
   }
 
   
-  int init1 = Init_Board(0x06000000);
-  int init2 = Init_Board(0x05000000);
-  int init3 = Init_Board(0x09000000);
+  int init1 = Init_Board(0x06000000, 1, 6);
+  int init2 = Init_Board(0x05000000, 2, 5);
+  int init3 = Init_Board(0x09000000, 8, 9);
+  int init4 = Init_Board(0x88880000, 9, 8);
 
-  if (init1 | init2 | init3){
+  if (init1 | init2 | init3 | init4){
     printf("Initialization failed. Press any key\n");
     getch();
     goto QuitProgram;
   }
   
-  /*
   printf("Setting for block transfer\n");
   write_reg(0x1004, 0xAA, 0x06000000);
   write_reg(0x1004, 0xAA, 0x05000000);
-  write_reg(0x1004, 0xAA, 0x06000000);
-
-  write_reg(0x1004, 0x02, 0x06000000);
-  write_reg(0x1004, 0x03, 0x05000000);
-  write_reg(0x1004, 0x01, 0x09000000);
-  */
+  write_reg(0x1004, 0xAA, 0x09000000);
+  write_reg(0x1004, 0xAA, 0x88880000);
   
-  //write_reg(0x1006, 0x80, 0xAA000000);
+  write_reg(0x101A, 0x02, 0x06000000);
+  write_reg(0x101A, 0x00, 0x05000000);
+  write_reg(0x101A, 0x03, 0x09000000);
+  write_reg(0x101A, 0x01, 0x88880000);
+
+ // write_reg(0x1006, 0x80, 0x06000000);
   
   printf("Done\n");
   
@@ -271,6 +276,7 @@ int main(int argc, char *argv[])
 
   // if needed, read a new block of data from the board
   signal(SIGINT, sighandler);
+  signal(SIGTERM, sighandler);
   int ppnt = -1, pwcnt=-1;
   printf("reading...\n");
 
@@ -279,28 +285,33 @@ int main(int argc, char *argv[])
       adcval[ich] = 4444;
   }
 
-  while(!quit){
   
-    uint32_t ReadAddress = 0x06000000; 
-    CAENVME_FIFOMBLTReadCycle(handle, ReadAddress, (char *)buffer, MAX_BLT_SIZE, cvA32_U_MBLT, &bcnt);
+  while(!quit){
+    
+    uint32_t ReadAddress = 0xAA000000;
+   CVErrorCodes ret; 
+    ret = CAENVME_FIFOMBLTReadCycle(handle, ReadAddress, (char *)buffer, MAX_BLT_SIZE, cvA32_U_MBLT, &bcnt);
+    if (bcnt) printf("Evt so far: %d bcnt: %d ret code %d\n",evt,bcnt,ret);
     if (bcnt == 0){
       continue;
     } 
 
     wcnt = bcnt/4;
 
-    
+    int evcounthw = buffer[33] &0xffffff;
     
     int adc0 = 4444, adc1 = 4444, adc2 = 4444, adc3 = 4444;
     for (pnt=0; pnt < wcnt; pnt+=1){
       
       int dtype = infoword792(buffer[pnt], &adc_chan, &adc_val);
 
-      printf("evt %d pnt %d wcnt %d bcnt/4 %.2f - word type %s\n\r", evt, pnt, wcnt, bcnt/4., dtype);
+      printf("evt %d evcnthw %d data 0x%x geo %d pnt %d wcnt %d - word type %d (return code %d)\n", evt, evcounthw, buffer[pnt], buffer[pnt] >> 27, pnt, wcnt, dtype, ret);
       
       if (dtype == 0 && adc_chan < NCHAN){
 	adcval[adc_chan] = adc_val;
       }
+      
+
     }
 
     fprintf(datafile,"%d %d %d %d\n",adcval[0],adcval[1],adcval[2],adcval[3]);
