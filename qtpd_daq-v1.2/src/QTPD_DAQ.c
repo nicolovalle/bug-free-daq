@@ -121,19 +121,17 @@ uint16_t read_reg(uint16_t reg_addr, uint32_t BaseAddr)
 	return(data);
 }
 
-int infoword(char* c, uint w){
+int infoword792(uint32_t w, uint8_t *chan, uint16_t *val){ // returns datatype and, if payload, assign channel and ADC value
   int datatype = (w >> 24) & 0b111;
-  int chann = (w >> 16) & 0b11111;
-  sprintf(c, "dtype %d chan%d",datatype, chann);
-  if (datatype == 0 && (chann >= 0 && chann < 4)){
-    return w & 0xFFF;
+  if (datatype){
+    return datatype;
   }
   else{
-    return -1;
+    *chan = (w >> 16) & 0b11111;
+    *val = w & 0xFFF;
+    return datatype;
   }
 }
-
-
 
 /*******************************************************************************/
 /*                                WRITE_REG                                    */
@@ -197,6 +195,15 @@ int main(int argc, char *argv[])
   
   uint32_t pid = 0;
   uint32_t buffer[256*1024/4];
+
+  int evt = 0;
+  bool doopen = true;
+
+  uint8_t adc_chan = 0xFF;
+  uint16_t adc_val = 0xFFFF;
+
+  int NCHAN = 250;
+  uint16_t adcval[NCHAN];
   
   printf("\n");
   printf("****************************************************************************\n");
@@ -217,28 +224,6 @@ int main(int argc, char *argv[])
     printf("Failed to open VME controller...\n");
     Sleep(1000);
   }
-
-  // let's start doing things
-  
-  //write_reg(0x1016, 0); // reset board
-  //if (VMEerror) {
-  //  printf(ErrorString);
-  //  getch();
-  //  goto QuitProgram;
-  //}
-  //
-  //int model = (read_reg(0x803E) & 0xFF) + ((read_reg(0x803A) & 0xFF) << 8);
-  //printf("Model: %d\n",model);
-  //
-  //write_reg(0x1060, Iped);  // Set pedestal
-  //write_reg(0x1010, 0x60);  // enable BERR to close BLT at end of block
-  //
-  //write_reg(0x1032, 0x0010);  // disable zero suppression
-  //write_reg(0x1032, 0x0008);  // disable overrange suppression
-  //write_reg(0x1032, 0x1000);  // enable empty events
-  //
-  ////printf("Ctrl Reg = %04X\n", read_reg(0x1032));  
-  //printf("Board programmed\n");
 
   
   int init1 = Init_Board(0x06000000);
@@ -289,11 +274,13 @@ int main(int argc, char *argv[])
   int ppnt = -1, pwcnt=-1;
   printf("reading...\n");
 
-  int evt = 0;
-  bool doopen = true;
-  while(!quit){
+  
+  for (int ich = 0; ich < NCHAN; ich++){
+      adcval[ich] = 4444;
+  }
 
-    
+  while(!quit){
+  
     uint32_t ReadAddress = 0x06000000; 
     CAENVME_FIFOMBLTReadCycle(handle, ReadAddress, (char *)buffer, MAX_BLT_SIZE, cvA32_U_MBLT, &bcnt);
     if (bcnt == 0){
@@ -302,88 +289,29 @@ int main(int argc, char *argv[])
 
     wcnt = bcnt/4;
 
-
-    char info[40];
+    
+    
     int adc0 = 4444, adc1 = 4444, adc2 = 4444, adc3 = 4444;
     for (pnt=0; pnt < wcnt; pnt+=1){
-      int adc = infoword(info, buffer[pnt]);
-
-      printf("evt %d pnt %d wcnt %d bcnt/4 %.2f - %s\n\r", evt, pnt, wcnt, bcnt/4., info);
       
-      if (adc > -1){
-	char querychan0[] = "chan0";
-	char querychan1[] = "chan1";
-	char querychan2[] = "chan2";
-	char querychan3[] = "chan3";
-	if (strstr(info, querychan0) != NULL){
-	  adc0 = adc;
-	}
-	else if (strstr(info, querychan1) != NULL){
-	  adc1 = adc;
-	}
-	else if (strstr(info, querychan2) != NULL){
-	  adc2 = adc;
-	}
-	else if (strstr(info, querychan3) != NULL){
-	  adc3 = adc;
-	}
-	
+      int dtype = infoword792(buffer[pnt], &adc_chan, &adc_val);
+
+      printf("evt %d pnt %d wcnt %d bcnt/4 %.2f - word type %s\n\r", evt, pnt, wcnt, bcnt/4., dtype);
+      
+      if (dtype == 0 && adc_chan < NCHAN){
+	adcval[adc_chan] = adc_val;
       }
     }
 
-    fprintf(datafile,"%d %d %d %d\n",adc0,adc1,adc2,adc3);
+    fprintf(datafile,"%d %d %d %d\n",adcval[0],adcval[1],adcval[2],adcval[3]);
     fflush(datafile);
-    adc0 = 4444;
-    adc1 = 4444;
-    adc2 = 4444;
-    adc3 = 4444;
-	
-   
+
+    for (int ich = 0; ich < NCHAN; ich++) adcval[ich] = 4444;
+        
     evt++;     
   }
 
     
-  
- //while(!quit){
- //  char info[40];
- //  
- //  
- //  if ((pnt == wcnt) || ((buffer[pnt] & DATATYPE_MASK) == DATATYPE_FILLER)) { // FILLER is actually datatype empty (page 46 manual)
- //    
- //  
- //    CAENVME_FIFOMBLTReadCycle(handle, BaseAddress, (char *)buffer, MAX_BLT_SIZE, cvA32_U_MBLT, &bcnt);
- //    if (ENABLE_LOG && (bcnt>0)) {
- //	int b;
- //	fprintf(logfile, "Read Data Block: size = %d bytes\n", bcnt);
- //	for(b=0; b<(bcnt/4); b++)
- //	  fprintf(logfile, "%2d: %08X\n", b, buffer[b]);
- //    }
- //    //printf("bcnt %d",bcnt);
- //    wcnt = bcnt/4;
- //    totnb += bcnt;
- //    pnt = 0;
- //  }
- //  
- //
- //  infoword(info, buffer[pnt]);
- //  if (pnt != ppnt || pwcnt != wcnt){
- //    printf("Loop pnt %d wcnt %d bcnt/4 %.2f - %s\n\r", pnt, wcnt, bcnt/4., info);
- //    ppnt = pnt;
- //    pwcnt = wcnt;
- //  }
- //  
- //  
- //  if (wcnt == 0){  // no data available     
- //    continue;
- //  }
- //
- //  
- //  
- //  pnt++;
- //  
- //
- //  
- //}
   
  QuitProgram:
   printf("Exiting gracefully\n");
